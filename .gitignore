@@ -2,3 +2,11 @@
 /.venv
 /.vscode
 /__pycache__
+/bot/__pycache__
+/handlers/__pycache__
+
+# Ignore local DB files
+ozodbot.db*
+__pycache__/
+*.py[cod]
+*.dbozodbot.db*
