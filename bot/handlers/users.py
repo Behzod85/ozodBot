@@ -18,14 +18,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Siz {db_user.role} sifatida ro'yxatdan o'tgansiz.")
                 await commands_handler(update, context)
             else:
-                await update.message.reply_text("Sizning arizangiz direktor tomonidan tasdiqlanishini kutmoqda.")
+                await update.message.reply_text("Sizning murojaatingiz admin tomonidan ko'rib chiqilmoqda")
             return
 
-        keyboard = [
-            [InlineKeyboardButton("Men mijoz", callback_data="register_client")],
-            [InlineKeyboardButton("Men ishchi", callback_data="register_worker")],
-        ]
-        await update.message.reply_text("Xush kelibsiz! Ro'yxatdan o'tish uchun rolni tanlang:", reply_markup=InlineKeyboardMarkup(keyboard))
+        # New registration flow: create a pending user record without role
+        try:
+            new_user = User(telegram_id=user.id, name=user.full_name, role=None, approved=False)
+            session.add(new_user)
+            session.commit()
+        except Exception:
+            session.rollback()
+        # Notify the user in Uzbek that their request is under review
+        await update.message.reply_text("Sizning murojaatingiz admin tomonidan ko'rib chiqilmoqda")
     finally:
         session.close()
 

@@ -32,7 +32,7 @@ from bot.handlers import (
         list_workers,
         list_clients,
         show_usage,
-        show_orders_web,
+        list_orders,
     create_order,
     start_order,
     pickup,
@@ -103,7 +103,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r'^(Arizalar)$') & ~filters.COMMAND, pending_users))
     app.add_handler(MessageHandler(filters.Regex(r'^\s*Shablonlar\s*$') & ~filters.COMMAND, list_templates))
     app.add_handler(MessageHandler(filters.Regex(r"^(Shablon yaratish|Qadam qo'shish|Buyurtma yaratish|Buyurtmani boshlash|Rol tayinlash|Qadamlar)$") & ~filters.COMMAND, show_usage))
-    app.add_handler(MessageHandler(filters.Regex(r'^(Buyurtmalar)$') & ~filters.COMMAND, show_orders_web))
+    app.add_handler(MessageHandler(filters.Regex(r'^(Buyurtmalar)$') & ~filters.COMMAND, list_orders))
     app.add_handler(MessageHandler(filters.Regex(r'^(Ishchilar)$') & ~filters.COMMAND, list_workers))
     app.add_handler(MessageHandler(filters.Regex(r'^(Mijozlar)$') & ~filters.COMMAND, list_clients))
     app.add_handler(CommandHandler("set_worker_name", set_worker_name))

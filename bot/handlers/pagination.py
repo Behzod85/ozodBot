@@ -135,8 +135,9 @@ async def pending_users_page(session, chat_id, bot, page: int = 1, edit_query=No
     for u in items:
         text = f"tg={u.telegram_id} id={u.id}\nname={u.name}\nrole={u.role}"
         kb = [[
-            InlineKeyboardButton("Tasdiqlash", callback_data=f"approve:{u.telegram_id}"),
-            InlineKeyboardButton("Rad etish", callback_data=f"reject:{u.telegram_id}"),
+            InlineKeyboardButton("Ishchi", callback_data=f"set_role:{u.telegram_id}:worker"),
+            InlineKeyboardButton("Direktor", callback_data=f"set_role:{u.telegram_id}:director"),
+            InlineKeyboardButton("Mijoz", callback_data=f"set_role:{u.telegram_id}:client"),
         ]]
         mid = await _send_message_and_get_id(bot, chat_id, text, InlineKeyboardMarkup(kb))
         if mid is not None:
@@ -537,6 +538,63 @@ async def orders_created_page(session, chat_id, bot, page: int = 1, edit_query=N
             instruction_text = ""
         text = f"Mijoz: {client_name}\nNomi: {order_name}\nTavsifi: {order_description}\n{instruction_text}"
         kb = [[InlineKeyboardButton("Boshlash", callback_data=f"start_order:{o.id}")]]
+        mid = await _send_message_and_get_id(bot, chat_id, text, InlineKeyboardMarkup(kb))
+        if mid is not None:
+            item_msg_ids.append(mid)
+
+    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+
+
+async def orders_page(session, chat_id, bot, page: int = 1, edit_query=None):
+    logger.info("pagination.orders_page called chat=%s page=%s", chat_id, page)
+    q = session.query(Order).order_by(Order.id)
+    total = q.count()
+    if total == 0:
+        await _send_or_edit(bot, chat_id, "Hozircha buyurtmalar mavjud emas.", edit_query=edit_query)
+        return
+    total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    page = max(1, min(page, total_pages))
+    items = q.limit(PAGE_SIZE).offset((page - 1) * PAGE_SIZE).all()
+
+    header_text = f"Buyurtmalar — sahifa {page}/{total_pages}"
+    nav_kb = _build_nav("orders", page, total_pages)
+
+    key = (chat_id, "orders")
+    prev = _sent_messages.get(key)
+    if prev:
+        for mid in prev.get("item_ids", []):
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=mid)
+            except Exception:
+                pass
+
+    header_id = None
+    try:
+        if edit_query is not None:
+            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
+            header_id = edit_query.message.message_id
+        else:
+            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
+            header_id = getattr(resp, 'message_id', None)
+    except Exception:
+        try:
+            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
+            header_id = getattr(resp, 'message_id', None)
+        except Exception:
+            header_id = None
+
+    item_msg_ids = []
+    for o in items:
+        client_name = o.client.name if o.client else str(o.client_id)
+        order_name = getattr(o, 'name', '') or ''
+        order_description = getattr(o, 'description', '') or ''
+        try:
+            instrs = [s.instruction_text for s in o.steps if getattr(s, 'instruction_text', None)]
+            instruction_text = "\n".join(instrs)
+        except Exception:
+            instruction_text = ""
+        text = f"#{o.id} Mijoz: {client_name}\nNomi: {order_name}\nTavsifi: {order_description}\n{instruction_text}"
+        kb = [[InlineKeyboardButton("Buyurtma statusi", callback_data=f"order_status:{o.id}" )]]
         mid = await _send_message_and_get_id(bot, chat_id, text, InlineKeyboardMarkup(kb))
         if mid is not None:
             item_msg_ids.append(mid)

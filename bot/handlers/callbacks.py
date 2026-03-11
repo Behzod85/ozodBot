@@ -449,11 +449,20 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u.role = role
             u.approved = True
             session.commit()
-            role_uz = {"director": "direktor", "worker": "ishchi", "client": "mijoz"}[role]
+            # Notify the user with role-specific Uzbek messages
             try:
-                await context.bot.send_message(chat_id=u.telegram_id, text=f"Sizning rolingiz {role_uz} ga o'zgartirildi.")
+                if role == "client":
+                    await context.bot.send_message(chat_id=u.telegram_id, text=(
+                        "Hurmatli mijoz bizga ishonch bildirganingiz uchun tashakkur! "
+                        "Siz buyurtmalaringiz holatini ushbu botimiz orqali kuzatib borishingiz mumkin."
+                    ))
+                else:
+                    # worker or director
+                    role_label = "ishchi" if role == "worker" else "direktor"
+                    await context.bot.send_message(chat_id=u.telegram_id, text=f"Sizning arizangiz tasdiqlandi. Siz - {role_label}.")
             except Exception:
                 logger.warning("Foydalanuvchini to'g'ridan-to'g'ri xabardor qilib bo'lmadi.")
+            role_uz = {"director": "direktor", "worker": "ishchi", "client": "mijoz"}[role]
             await query.edit_message_text(f"Foydalanuvchi {u.name} ({u.telegram_id}) roli {role_uz} ga o'zgartirildi.")
             return
 
