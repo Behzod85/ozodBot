@@ -93,6 +93,111 @@ def _build_nav(view: str, page: int, total_pages: int, extra: str = None):
     return kb
 
 
+async def _send_or_edit_header(bot, chat_id: int, header_text: str, prev, edit_query=None):
+    """Send or edit the top header message (no navigation buttons).
+    Returns header_message_id or None.
+    """
+    header_id = None
+    prev_header_id = prev.get("header_id") if prev else None
+    # If a previous footer nav exists, remove it so it doesn't remain at top
+    prev_nav_id = prev.get("nav_id") if prev else None
+    if prev_nav_id and prev_nav_id != prev_header_id:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=prev_nav_id)
+        except Exception:
+            pass
+    try:
+        if edit_query is not None:
+            # If the callback came from the header message, edit it in-place.
+            if prev_header_id and edit_query.message and edit_query.message.message_id == prev_header_id:
+                await edit_query.edit_message_text(header_text, reply_markup=None)
+                header_id = edit_query.message.message_id
+            else:
+                # try to edit the stored header if possible, otherwise send a new header message.
+                if prev_header_id:
+                    try:
+                        await bot.edit_message_text(text=header_text, chat_id=chat_id, message_id=prev_header_id, reply_markup=None)
+                        header_id = prev_header_id
+                    except Exception:
+                        resp = await bot.send_message(chat_id=chat_id, text=header_text)
+                        header_id = getattr(resp, 'message_id', None)
+                        # remove stale previous header to avoid duplicates
+                        if prev_header_id and header_id and prev_header_id != header_id:
+                            try:
+                                await bot.delete_message(chat_id=chat_id, message_id=prev_header_id)
+                            except Exception:
+                                pass
+                else:
+                    resp = await bot.send_message(chat_id=chat_id, text=header_text)
+                    header_id = getattr(resp, 'message_id', None)
+                    if prev_header_id and header_id and prev_header_id != header_id:
+                        try:
+                            await bot.delete_message(chat_id=chat_id, message_id=prev_header_id)
+                        except Exception:
+                            pass
+        else:
+            resp = await bot.send_message(chat_id=chat_id, text=header_text)
+            header_id = getattr(resp, 'message_id', None)
+    except Exception:
+        try:
+            resp = await bot.send_message(chat_id=chat_id, text=header_text)
+            header_id = getattr(resp, 'message_id', None)
+            if prev_header_id and header_id and prev_header_id != header_id:
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=prev_header_id)
+                except Exception:
+                    pass
+        except Exception:
+            header_id = None
+    return header_id
+
+
+async def _send_or_edit_nav(bot, chat_id: int, nav_text: str, nav_kb, prev, edit_query=None):
+    """Send or edit the footer navigation message (with nav_kb). Returns nav_message_id or None."""
+    nav_id = None
+    prev_nav_id = prev.get("nav_id") if prev else None
+    prev_header_id = prev.get("header_id") if prev else None
+    try:
+        if edit_query is not None:
+            # If the callback came from the nav/footer message, edit it in-place.
+            # If the callback originated from the existing footer nav, edit it.
+            if prev_nav_id and edit_query.message and edit_query.message.message_id == prev_nav_id:
+                await edit_query.edit_message_text(nav_text, reply_markup=InlineKeyboardMarkup(nav_kb))
+                nav_id = edit_query.message.message_id
+            else:
+                # If the callback originated from the header (old behavior where nav was in header),
+                # clear the header's inline keyboard so nav can be moved to footer.
+                if prev_header_id and edit_query.message and edit_query.message.message_id == prev_header_id:
+                    try:
+                        await bot.edit_message_reply_markup(chat_id=chat_id, message_id=prev_header_id, reply_markup=None)
+                    except Exception:
+                        try:
+                            # last resort: edit header text without markup
+                            await bot.edit_message_text(text=nav_text, chat_id=chat_id, message_id=prev_header_id)
+                        except Exception:
+                            pass
+                if prev_nav_id:
+                    try:
+                        await bot.edit_message_text(text=nav_text, chat_id=chat_id, message_id=prev_nav_id, reply_markup=InlineKeyboardMarkup(nav_kb))
+                        nav_id = prev_nav_id
+                    except Exception:
+                        resp = await bot.send_message(chat_id=chat_id, text=nav_text, reply_markup=InlineKeyboardMarkup(nav_kb))
+                        nav_id = getattr(resp, 'message_id', None)
+                else:
+                    resp = await bot.send_message(chat_id=chat_id, text=nav_text, reply_markup=InlineKeyboardMarkup(nav_kb))
+                    nav_id = getattr(resp, 'message_id', None)
+        else:
+            resp = await bot.send_message(chat_id=chat_id, text=nav_text, reply_markup=InlineKeyboardMarkup(nav_kb))
+            nav_id = getattr(resp, 'message_id', None)
+    except Exception:
+        try:
+            resp = await bot.send_message(chat_id=chat_id, text=nav_text, reply_markup=InlineKeyboardMarkup(nav_kb))
+            nav_id = getattr(resp, 'message_id', None)
+        except Exception:
+            nav_id = None
+    return nav_id
+
+
 async def pending_users_page(session, chat_id, bot, page: int = 1, edit_query=None):
     logger.info("pagination.pending_users_page called chat=%s page=%s", chat_id, page)
     q = session.query(User).filter(User.approved == False)
@@ -116,20 +221,8 @@ async def pending_users_page(session, chat_id, bot, page: int = 1, edit_query=No
             except Exception:
                 pass
 
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for u in items:
@@ -143,7 +236,11 @@ async def pending_users_page(session, chat_id, bot, page: int = 1, edit_query=No
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def workers_page(session, chat_id, bot, page: int = 1, edit_query=None):
@@ -168,22 +265,8 @@ async def workers_page(session, chat_id, bot, page: int = 1, edit_query=None):
                 await bot.delete_message(chat_id=chat_id, message_id=mid)
             except Exception:
                 pass
-
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
-
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
     item_msg_ids = []
     for w in items:
         text = f"tg={w.telegram_id} id={w.id}\nname={w.name}\nrole={w.role}"
@@ -195,7 +278,11 @@ async def workers_page(session, chat_id, bot, page: int = 1, edit_query=None):
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def clients_page(session, chat_id, bot, page: int = 1, edit_query=None):
@@ -220,21 +307,8 @@ async def clients_page(session, chat_id, bot, page: int = 1, edit_query=None):
                 await bot.delete_message(chat_id=chat_id, message_id=mid)
             except Exception:
                 pass
-
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for c in items:
@@ -248,6 +322,7 @@ async def clients_page(session, chat_id, bot, page: int = 1, edit_query=None):
             item_msg_ids.append(mid)
 
     _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+
 
 
 async def templates_page(session, chat_id, bot, page: int = 1, is_director: bool = False, edit_query=None):
@@ -272,21 +347,8 @@ async def templates_page(session, chat_id, bot, page: int = 1, is_director: bool
                 await bot.delete_message(chat_id=chat_id, message_id=mid)
             except Exception:
                 pass
-
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for t in items:
@@ -309,7 +371,11 @@ async def templates_page(session, chat_id, bot, page: int = 1, is_director: bool
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def processes_page(session, chat_id, bot, page: int = 1, edit_query=None):
@@ -333,21 +399,8 @@ async def processes_page(session, chat_id, bot, page: int = 1, edit_query=None):
                 await bot.delete_message(chat_id=chat_id, message_id=mid)
             except Exception:
                 pass
-
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for p in items:
@@ -362,7 +415,11 @@ async def processes_page(session, chat_id, bot, page: int = 1, edit_query=None):
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def select_processes_for_template(session, chat_id, bot, template_id: int, page: int = 1, edit_query=None, context=None):
@@ -414,36 +471,8 @@ async def select_processes_for_template(session, chat_id, bot, template_id: int,
                     except Exception:
                         pass
 
-    header_id = None
-    try:
-        prev_header_id = prev.get("header_id") if prev else None
-        if edit_query is not None:
-            # If the callback came from the header message (navigation), edit it in-place.
-            if prev_header_id and edit_query.message and edit_query.message.message_id == prev_header_id:
-                await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(header_kb))
-                header_id = edit_query.message.message_id
-            else:
-                # callback did not originate from header; edit the stored header if possible,
-                # otherwise send a new header message.
-                if prev_header_id:
-                    try:
-                        await bot.edit_message_text(text=header_text, chat_id=chat_id, message_id=prev_header_id, reply_markup=InlineKeyboardMarkup(header_kb))
-                        header_id = prev_header_id
-                    except Exception:
-                        resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(header_kb))
-                        header_id = getattr(resp, 'message_id', None)
-                else:
-                    resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(header_kb))
-                    header_id = getattr(resp, 'message_id', None)
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(header_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(header_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     # Build or update per-item messages. If we have a previous item_map and the
     # page is unchanged, update each item's text/reply_markup in-place. This
@@ -484,7 +513,15 @@ async def select_processes_for_template(session, chat_id, bot, template_id: int,
             if mid is not None:
                 item_msg_map[p.id] = mid
 
-    _sent_messages[key] = {"header_id": header_id, "item_map": item_msg_map, "page": page}
+    # build footer nav with pagination and the 'Yaratish' finish button
+    footer_nav = nav_kb.copy()
+    footer_nav.append([InlineKeyboardButton("Yaratish", callback_data=f"create_template:finish:{template_id}")])
+
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, footer_nav, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_map": item_msg_map, "page": page}
 
 
 async def orders_created_page(session, chat_id, bot, page: int = 1, edit_query=None):
@@ -510,20 +547,8 @@ async def orders_created_page(session, chat_id, bot, page: int = 1, edit_query=N
             except Exception:
                 pass
 
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for o in items:
@@ -542,7 +567,11 @@ async def orders_created_page(session, chat_id, bot, page: int = 1, edit_query=N
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def orders_page(session, chat_id, bot, page: int = 1, edit_query=None):
@@ -568,20 +597,8 @@ async def orders_page(session, chat_id, bot, page: int = 1, edit_query=None):
             except Exception:
                 pass
 
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for o in items:
@@ -599,7 +616,11 @@ async def orders_page(session, chat_id, bot, page: int = 1, edit_query=None):
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def my_orders_page(session, chat_id, bot, client_id: int, page: int = 1, edit_query=None):
@@ -625,20 +646,8 @@ async def my_orders_page(session, chat_id, bot, client_id: int, page: int = 1, e
             except Exception:
                 pass
 
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for o in items:
@@ -659,7 +668,11 @@ async def my_orders_page(session, chat_id, bot, client_id: int, page: int = 1, e
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def my_tasks_page(session, chat_id, bot, worker_id: int, page: int = 1, edit_query=None):
@@ -685,20 +698,8 @@ async def my_tasks_page(session, chat_id, bot, worker_id: int, page: int = 1, ed
             except Exception:
                 pass
 
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for t in items:
@@ -715,7 +716,11 @@ async def my_tasks_page(session, chat_id, bot, worker_id: int, page: int = 1, ed
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def pending_steps_page(session, chat_id, bot, page: int = 1, edit_query=None):
@@ -741,20 +746,8 @@ async def pending_steps_page(session, chat_id, bot, page: int = 1, edit_query=No
             except Exception:
                 pass
 
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for s in items:
@@ -771,7 +764,11 @@ async def pending_steps_page(session, chat_id, bot, page: int = 1, edit_query=No
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def select_clients_for_order(session, chat_id, bot, page: int = 1, edit_query=None):
@@ -796,20 +793,8 @@ async def select_clients_for_order(session, chat_id, bot, page: int = 1, edit_qu
             except Exception:
                 pass
 
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     item_msg_ids = []
     for c in items:
@@ -820,7 +805,11 @@ async def select_clients_for_order(session, chat_id, bot, page: int = 1, edit_qu
         if mid is not None:
             item_msg_ids.append(mid)
 
-    _sent_messages[key] = {"header_id": header_id, "item_ids": item_msg_ids}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": item_msg_ids}
 
 
 async def select_templates_for_order(session, chat_id, bot, page: int = 1, edit_query=None):
@@ -884,20 +873,8 @@ async def select_users_for_roles(session, chat_id, bot, page: int = 1, edit_quer
                 pass
 
     # update or send header (the message that holds navigation)
-    header_id = None
-    try:
-        if edit_query is not None:
-            await edit_query.edit_message_text(header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = edit_query.message.message_id
-        else:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-    except Exception:
-        try:
-            resp = await bot.send_message(chat_id=chat_id, text=header_text, reply_markup=InlineKeyboardMarkup(nav_kb))
-            header_id = getattr(resp, 'message_id', None)
-        except Exception:
-            header_id = None
+    # send or edit top header (no nav)
+    header_id = await _send_or_edit_header(bot, chat_id, header_text, prev, edit_query=edit_query)
 
     # send each item as its own message with per-item inline buttons so buttons appear right under the item
     item_msg_ids = []
@@ -920,4 +897,9 @@ async def select_users_for_roles(session, chat_id, bot, page: int = 1, edit_quer
                 pass
 
     # store mapping so we can cleanup on next page change
-    _sent_messages[key] = {"header_id": header_id, "item_ids": [m for m in item_msg_ids if m is not None]}
+    # send or edit footer nav (nav appears under items)
+    nav_text = f"{page}/{total_pages}"
+    nav_id = await _send_or_edit_nav(bot, chat_id, nav_text, nav_kb, prev, edit_query=edit_query)
+
+    # store mapping so we can cleanup on next page change
+    _sent_messages[key] = {"header_id": header_id, "nav_id": nav_id, "item_ids": [m for m in item_msg_ids if m is not None]}
